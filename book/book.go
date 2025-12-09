@@ -3,6 +3,7 @@ package book
 import (
 	"order-book/order"
 	"sort"
+	"sync"
 
 	"github.com/emirpasic/gods/trees/redblacktree"
 	"github.com/emirpasic/gods/utils"
@@ -18,11 +19,14 @@ type Book interface {
 }
 
 type BookImpl struct {
+	mu          sync.Mutex
 	askTreesMap map[string]*redblacktree.Tree
 	bidTreesMap map[string]*redblacktree.Tree
 }
 
 func (b *BookImpl) AddOrder(o order.Order) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	var tree *redblacktree.Tree
 	if o.Type == order.ASK {
 		tree = b.askTreesMap[o.PairID]
@@ -53,6 +57,8 @@ func (b *BookImpl) AddOrder(o order.Order) {
 }
 
 func (b *BookImpl) MatchOrder(o order.Order) (*order.Order, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	var tree *redblacktree.Tree
 	if o.Type == order.ASK {
 		tree = b.bidTreesMap[o.PairID]
