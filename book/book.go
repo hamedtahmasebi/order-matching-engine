@@ -19,7 +19,7 @@ type Book interface {
 }
 
 type BookImpl struct {
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	askTreesMap map[string]*redblacktree.Tree
 	bidTreesMap map[string]*redblacktree.Tree
 }
@@ -100,6 +100,8 @@ func (b *BookImpl) GetAllOrders(pairId string) (
 	ask map[float64][]order.Order,
 	bid map[float64][]order.Order,
 ) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	pairAskTree := b.askTreesMap[pairId]
 	pairBidTree := b.bidTreesMap[pairId]
 
