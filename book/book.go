@@ -1,6 +1,7 @@
 package book
 
 import (
+	"fmt"
 	"order-book/order"
 	"sort"
 	"sync"
@@ -16,15 +17,18 @@ type Book interface {
 		ask map[float64][]order.Order,
 		bid map[float64][]order.Order,
 	)
+
+	processOrder(o order.Order)
 }
 
 type BookImpl struct {
-	mu          sync.RWMutex
-	askTreesMap map[string]*redblacktree.Tree
-	bidTreesMap map[string]*redblacktree.Tree
+	mu                     sync.RWMutex
+	askTreesMap            map[string]*redblacktree.Tree
+	bidTreesMap            map[string]*redblacktree.Tree
+	orderProcessingChannel chan order.Order
 }
 
-func (b *BookImpl) AddOrder(o order.Order) {
+func (b *BookImpl) processOrder(o order.Order) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var tree *redblacktree.Tree
@@ -54,6 +58,14 @@ func (b *BookImpl) AddOrder(o order.Order) {
 		return orderList[i].CreatedAt.Before(orderList[j].CreatedAt)
 	})
 	node.Value.(*order.OrderList).List = orderList
+	foundOrder := orderList[0]
+	node.Value.(*order.OrderList).List = orderList[1:]
+	fmt.Printf("Sending order to the broker to process ( NOT IMPLEMENTED YET ) %v %v %v %v \n", foundOrder.ID, foundOrder.Price, foundOrder.Amount, foundOrder.Type)
+	// TODO: Implement sending to broker
+}
+
+func (b *BookImpl) AddOrder(o order.Order) {
+	b.orderProcessingChannel <- o
 }
 
 func (b *BookImpl) MatchOrder(o order.Order) (*order.Order, bool) {
@@ -126,8 +138,17 @@ func (b *BookImpl) GetAllOrders(pairId string) (
 }
 
 func NewBook() Book {
-	return &BookImpl{
-		askTreesMap: make(map[string]*redblacktree.Tree, 0),
-		bidTreesMap: make(map[string]*redblacktree.Tree, 0),
+	b := BookImpl{
+		askTreesMap:            make(map[string]*redblacktree.Tree, 0),
+		bidTreesMap:            make(map[string]*redblacktree.Tree, 0),
+		orderProcessingChannel: make(chan order.Order),
 	}
+	go func() {
+		for o := range b.orderProcessingChannel {
+			b.processOrder(o)
+		}
+	}()
+
+	return &b
+
 }

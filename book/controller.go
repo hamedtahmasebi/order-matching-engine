@@ -16,7 +16,7 @@ type Response struct {
 }
 
 func BindOrderBookRouter(r fiber.Router, book Book) {
-	r.Post("/match", func(c *fiber.Ctx) error {
+	r.Post("/add-order", func(c *fiber.Ctx) error {
 		var order order.Order
 		if err := c.BodyParser(&order); err != nil {
 			return err
@@ -24,24 +24,14 @@ func BindOrderBookRouter(r fiber.Router, book Book) {
 		order.CreatedAt = time.Now()
 		order.ID = uuid.NewString()
 
-		match, found := book.MatchOrder(order)
-		if !found {
-			book.AddOrder(order)
-			resp := &Response{
-				Message: "Match not found",
-				Data:    nil,
-			}
-			c.Status(http.StatusAccepted)
-			return c.JSON(resp)
-		}
-
+		book.AddOrder(order)
 		resp := &Response{
-			Message: "Match found",
-			Data:    match,
+			Message: "Order Submitted Succesfully",
+			Data:    nil,
 		}
-
 		c.Status(http.StatusAccepted)
 		return c.JSON(resp)
+
 	})
 
 	r.Get("/order-book/:pair_id", func(c *fiber.Ctx) error {
