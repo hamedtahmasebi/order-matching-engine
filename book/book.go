@@ -1,6 +1,7 @@
 package book
 
 import (
+	"errors"
 	"order-book/logger"
 	"order-book/order"
 	"slices"
@@ -8,7 +9,10 @@ import (
 
 	"github.com/emirpasic/gods/trees/redblacktree"
 	"github.com/emirpasic/gods/utils"
+	"github.com/gofiber/fiber/v2/log"
 )
+
+var ErrOrderNotFound = errors.New("Order not found")
 
 type Book interface {
 	AddOrder(o order.Order)
@@ -16,12 +20,15 @@ type Book interface {
 		ask map[float64][]order.Order,
 		bid map[float64][]order.Order,
 	)
+	RemoveOrder(id string) error
+}
 
-	insertOrder(o order.Order)
-	matchOrder(o order.Order) (matchedOrders []order.Order, amountLeft float64)
-
-	// utils
-	getTreeFor(pairId string, orderType order.OrderType) *redblacktree.Tree
+type OrderMetadata struct {
+	PairId string
+	Price  float64
+	Type   order.OrderType
+	Amount float64
+	ID     string
 }
 
 type BookImpl struct {
@@ -29,13 +36,25 @@ type BookImpl struct {
 	askTreesMap            map[string]*redblacktree.Tree
 	bidTreesMap            map[string]*redblacktree.Tree
 	orderProcessingChannel chan order.Order
+	ordersIndex            map[string]OrderMetadata
 }
 
 func (b *BookImpl) insertOrder(o order.Order) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	b.ordersIndex[o.ID] = OrderMetadata{
+		Price:  o.Price,
+		Type:   o.Type,
+		Amount: o.Amount,
+		ID:     o.ID,
+		PairId: o.PairID,
+	}
+
 	tree := b.getTreeFor(o.PairID, o.Type)
+	if tree == nil {
+		tree = b.genTreeFor(o.PairID, o.Type)
+	}
 
 	node := tree.GetNode(o.Price)
 	if node == nil {
@@ -82,6 +101,9 @@ func (b *BookImpl) matchOrder(o order.Order) (matchedOrders []order.Order, amoun
 	}
 
 	tree := b.getTreeFor(o.PairID, treeType)
+	if tree == nil {
+		tree = b.genTreeFor(o.PairID, treeType)
+	}
 	priceMatchedOrdersNode := tree.GetNode(o.Price)
 	if priceMatchedOrdersNode == nil {
 		logger.Debug("no matching orders with this price found", map[string]interface{}{
@@ -127,6 +149,48 @@ func (b *BookImpl) matchOrder(o order.Order) (matchedOrders []order.Order, amoun
 	}
 
 	return
+}
+
+func (b *BookImpl) RemoveOrder(id string) error {
+	logger.Info("Searching for order", map[string]interface{}{
+		"order_id": id,
+	})
+	orderMetadata, exists := b.ordersIndex[id]
+	if !exists {
+		log.Error("Order not found in the index")
+		return ErrOrderNotFound
+	}
+
+	tree := b.getTreeFor(orderMetadata.PairId, orderMetadata.Type)
+	if tree == nil {
+		log.Error("Order tree not found")
+		return ErrOrderNotFound
+	}
+	node := tree.GetNode(orderMetadata.Price)
+	if node == nil {
+		return ErrOrderNotFound
+	}
+
+	orders := node.Value.(*order.OrderList).List
+	for idx, o := range orders {
+		if o.ID == orderMetadata.ID {
+			logger.Debug("order removed", map[string]interface{}{
+				"order_id": o.ID,
+				"pair_id":  o.PairID,
+				"type":     o.Type,
+				"price":    o.Price,
+				"amount":   o.Amount,
+			})
+			orders := slices.Delete(orders, idx, idx+1)
+			node.Value.(*order.OrderList).List = orders
+			delete(b.ordersIndex, id)
+			if len(orders) == 0 {
+				tree.Remove(node.Key)
+			}
+			return nil
+		}
+	}
+	return ErrOrderNotFound
 }
 
 func (b *BookImpl) AddOrder(o order.Order) {
@@ -186,27 +250,29 @@ func (b *BookImpl) GetAllOrders(pairId string) (
 func (b *BookImpl) getTreeFor(pairId string, orderType order.OrderType) *redblacktree.Tree {
 	if orderType == order.ASK {
 		tree := b.askTreesMap[pairId]
-		if tree == nil {
-			tree = redblacktree.NewWith(utils.Float64Comparator)
-			b.askTreesMap[pairId] = tree
-			logger.Debug("created new ask tree", map[string]any{
-				"pair_id": pairId,
-			})
-		}
 		return tree
 	}
 	if orderType == order.BID {
 		tree := b.bidTreesMap[pairId]
-		if tree == nil {
-			tree = redblacktree.NewWith(utils.Float64Comparator)
-			b.bidTreesMap[pairId] = tree
-			logger.Debug("created new bid tree", map[string]any{
-				"pair_id": pairId,
-			})
-		}
 		return tree
 	}
 	return nil
+}
+
+func (b *BookImpl) genTreeFor(pairId string, orderType order.OrderType) *redblacktree.Tree {
+	tree := redblacktree.NewWith(utils.Float64Comparator)
+	if orderType == order.ASK {
+		logger.Debug("created new ask tree", map[string]any{
+			"pair_id": pairId,
+		})
+		b.askTreesMap[pairId] = tree
+	} else {
+		logger.Debug("created new bid tree", map[string]any{
+			"pair_id": pairId,
+		})
+		b.bidTreesMap[pairId] = tree
+	}
+	return tree
 }
 
 func NewBook() Book {
@@ -216,6 +282,7 @@ func NewBook() Book {
 		askTreesMap:            make(map[string]*redblacktree.Tree, 0),
 		bidTreesMap:            make(map[string]*redblacktree.Tree, 0),
 		orderProcessingChannel: make(chan order.Order),
+		ordersIndex:            make(map[string]OrderMetadata),
 	}
 
 	go func() {

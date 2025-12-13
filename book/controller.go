@@ -16,6 +16,30 @@ type Response struct {
 }
 
 func BindOrderBookRouter(r fiber.Router, book Book) {
+	r.Delete("/order-book/:id", func(c *fiber.Ctx) error {
+		id := c.Params("id")
+		if id == "" {
+			c.Status(http.StatusBadRequest)
+			return c.JSON(&Response{
+				Message: "ID is required",
+				Data:    nil,
+			})
+		}
+		err := book.RemoveOrder(id)
+		if err == ErrOrderNotFound {
+			c.Status(http.StatusNotFound)
+			return c.JSON(&Response{
+				Message: "The order not found",
+				Data:    nil,
+			})
+		}
+
+		c.Status(http.StatusOK)
+		return c.JSON(&Response{
+			Message: "Order removed successfully",
+			Data:    nil,
+		})
+	})
 	r.Post("/add-order", func(c *fiber.Ctx) error {
 		var order order.Order
 		if err := c.BodyParser(&order); err != nil {
