@@ -80,8 +80,7 @@ func BindOrderBookRouter(r fiber.Router, book Book) {
 			bidsJson[strconv.FormatFloat(k, 'f', -1, 64)] = v
 		}
 
-		c.Status(http.StatusAccepted)
-
+		c.Status(http.StatusOK)
 		return c.JSON(&Response{
 			Message: "",
 			Data: map[string]any{
