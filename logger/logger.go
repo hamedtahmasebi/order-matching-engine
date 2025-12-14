@@ -43,7 +43,7 @@ var defaultLogger *Logger
 func init() {
 	defaultLogger = &Logger{
 		writers:  []io.Writer{os.Stdout},
-		minLevel: InfoLevel,
+		minLevel: DebugLevel,
 	}
 }
 

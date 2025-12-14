@@ -1,18 +1,27 @@
 package book
 
 import (
+	"errors"
 	"net/http"
+	"order-book/logger"
 	"order-book/order"
 	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/websocket/v2"
 	"github.com/google/uuid"
+)
+
+var (
+	ErrFieldRequired = errors.New("ErrFieldRequired")
+	ErrInvalidData   = errors.New("ErrInvalidData")
 )
 
 type Response struct {
 	Message string `json:"message"`
 	Data    any    `json:"data"`
+	Error   error
 }
 
 func BindOrderBookRouter(r fiber.Router, book Book) {
@@ -58,37 +67,108 @@ func BindOrderBookRouter(r fiber.Router, book Book) {
 
 	})
 
-	r.Get("/order-book/:pair_id", func(c *fiber.Ctx) error {
+	r.Get("/ws/order-book/:pair_id", websocket.New(func(c *websocket.Conn) {
+		defer func() {
+			c.Close()
+		}()
+
 		pairId := c.Params("pair_id")
 		if pairId == "" {
-			c.Status(http.StatusBadRequest)
-			return c.JSON(&Response{
-				Message: "Pair ID is required",
+			c.WriteJSON(&Response{
+				Error:   ErrFieldRequired,
+				Message: "Please provide a pair_id",
 				Data:    nil,
+			})
+			c.Close()
+		}
+
+		size, err := strconv.Atoi(c.Query("size"))
+		if err != nil {
+			c.WriteJSON(&Response{
+				Error:   ErrInvalidData,
+				Message: "Size should be a number",
 			})
 		}
 
-		asks, bids := book.GetAllOrders(pairId)
-		asksJson := make(map[string][]order.Order, len(asks))
-		bidsJson := make(map[string][]order.Order, len(bids))
-
-		for k, v := range asks {
-			asksJson[strconv.FormatFloat(k, 'f', -1, 64)] = v
+		offset, err := strconv.Atoi(c.Query("offset"))
+		if err != nil {
+			c.WriteJSON(&Response{
+				Error:   ErrInvalidData,
+				Message: "Offset should be a number",
+			})
 		}
 
-		for k, v := range bids {
-			bidsJson[strconv.FormatFloat(k, 'f', -1, 64)] = v
+		ticker := time.NewTicker(time.Second * 1)
+		defer ticker.Stop()
+		go func() {
+			defer c.Close()
+			for {
+				_, _, err := c.ReadMessage()
+				if err != nil {
+					return
+				}
+			}
+		}()
+
+		for t := range ticker.C {
+			err := c.WriteControl(websocket.PingMessage, []byte("Ping message"), time.Now().Add(5*time.Second))
+			if err != nil {
+				logger.Error("Closing ws connection", map[string]any{
+					"err": err.Error(),
+				})
+				break
+			}
+			asks, bids := book.GetOrders(pairId, size, offset)
+			err = c.WriteJSON(map[string]any{
+				"asks": asks,
+				"bids": bids,
+				"time": t,
+			})
+			if err != nil {
+				logger.Error("Error while sending orders through ws", map[string]any{
+					"err":     err,
+					"pair_id": pairId,
+					"size":    size,
+					"offset":  offset,
+				})
+				c.Close()
+				return
+			}
 		}
 
-		c.Status(http.StatusOK)
-		return c.JSON(&Response{
-			Message: "",
-			Data: map[string]any{
-				"asks": asksJson,
-				"bids": bidsJson,
-			},
-		})
+	}))
 
-	})
+	// r.Get("/order-book/:pair_id", func(c *fiber.Ctx) error {
+	// 	pairId := c.Params("pair_id")
+	// 	if pairId == "" {
+	// 		c.Status(http.StatusBadRequest)
+	// 		return c.JSON(&Response{
+	// 			Message: "Pair ID is required",
+	// 			Data:    nil,
+	// 		})
+	// 	}
+
+	// 	asks, bids := book.GetAllOrders(pairId)
+	// 	asksJson := make(map[string][]order.Order, len(asks))
+	// 	bidsJson := make(map[string][]order.Order, len(bids))
+
+	// 	for k, v := range asks {
+	// 		asksJson[strconv.FormatFloat(k, 'f', -1, 64)] = v
+	// 	}
+
+	// 	for k, v := range bids {
+	// 		bidsJson[strconv.FormatFloat(k, 'f', -1, 64)] = v
+	// 	}
+
+	// 	c.Status(http.StatusOK)
+	// 	return c.JSON(&Response{
+	// 		Message: "",
+	// 		Data: map[string]any{
+	// 			"asks": asksJson,
+	// 			"bids": bidsJson,
+	// 		},
+	// 	})
+
+	// })
 
 }

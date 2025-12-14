@@ -9,16 +9,15 @@ import (
 
 	"github.com/emirpasic/gods/trees/redblacktree"
 	"github.com/emirpasic/gods/utils"
-	"github.com/gofiber/fiber/v2/log"
 )
 
 var ErrOrderNotFound = errors.New("Order not found")
 
 type Book interface {
 	AddOrder(o order.Order)
-	GetAllOrders(pairId string) (
-		ask map[float64][]order.Order,
-		bid map[float64][]order.Order,
+	GetOrders(pairId string, size int, offset int) (
+		ask []order.Order,
+		bid []order.Order,
 	)
 	RemoveOrder(id string) error
 }
@@ -157,13 +156,13 @@ func (b *BookImpl) RemoveOrder(id string) error {
 	})
 	orderMetadata, exists := b.ordersIndex[id]
 	if !exists {
-		log.Error("Order not found in the index")
+		logger.Error("Order not found in the index")
 		return ErrOrderNotFound
 	}
 
 	tree := b.getTreeFor(orderMetadata.PairId, orderMetadata.Type)
 	if tree == nil {
-		log.Error("Order tree not found")
+		logger.Error("Order tree not found")
 		return ErrOrderNotFound
 	}
 	node := tree.GetNode(orderMetadata.Price)
@@ -204,9 +203,9 @@ func (b *BookImpl) AddOrder(o order.Order) {
 	b.orderProcessingChannel <- o
 }
 
-func (b *BookImpl) GetAllOrders(pairId string) (
-	ask map[float64][]order.Order,
-	bid map[float64][]order.Order,
+func (b *BookImpl) GetOrders(pairId string, size int, offset int) (
+	ask []order.Order,
+	bid []order.Order,
 ) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -214,34 +213,34 @@ func (b *BookImpl) GetAllOrders(pairId string) (
 	pairAskTree := b.askTreesMap[pairId]
 	pairBidTree := b.bidTreesMap[pairId]
 
-	ask = make(map[float64][]order.Order)
-	bid = make(map[float64][]order.Order)
-
-	askCount := 0
-	bidCount := 0
-
 	if pairAskTree != nil {
 		it := pairAskTree.Iterator()
-		for it.Next() != false {
+		it.End() // because we want the highest ask first, we need to start from the end backwards
+		for i := 0; i < offset && it.Prev() != false; i++ {
+		}
+
+		for i := 0; i < size && it.Prev() != false; i++ {
 			orderList := it.Value().(*order.OrderList).List
-			ask[it.Key().(float64)] = orderList
-			askCount += len(orderList)
+			ask = append(ask, orderList...)
 		}
 	}
 
 	if pairBidTree != nil {
 		it := pairBidTree.Iterator()
-		for it.Next() != false {
+
+		for i := 0; i < offset && it.Next() != false; i++ {
+		}
+
+		for i := 0; i < size && it.Next() != false; i++ {
 			orderList := it.Value().(*order.OrderList).List
-			bid[it.Key().(float64)] = orderList
-			bidCount += len(orderList)
+			bid = append(bid, orderList...)
 		}
 	}
 
 	logger.Debug("retrieved all orders", map[string]any{
 		"pair_id":   pairId,
-		"ask_count": askCount,
-		"bid_count": bidCount,
+		"ask_count": len(ask),
+		"bid_count": len(bid),
 	})
 
 	return
