@@ -1,0 +1,15 @@
+services:
+    db:
+        image: postgres:14.5-alpine
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            POSTGRES_DB: order_book
+        networks:
+            - order-book-network
+        ports:
+            - "5432:5432"
+
+networks:
+    order-book-network:
+        driver: bridge
