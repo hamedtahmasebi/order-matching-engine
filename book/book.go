@@ -118,6 +118,11 @@ func (b *BookImpl) matchOrder(o order.Order) (matchedOrders []order.Order, amoun
 	ordersList := priceMatchedOrdersNode.Value.(*order.OrderList).List
 
 	for idx := 0; idx < len(ordersList) && amountLeft > 0; {
+		// Skip user's previous orders
+		if ordersList[idx].AccountID == o.AccountID {
+			idx++
+			continue
+		}
 		// NOTE: A larger existing order causes a break -> No need to increase idx
 		// 		 A smaller existing order causes a delete -> a shift in the array -> idx now points to the next element automatically -> no need to increase idx
 		// 		 This is more like a FIFO stack instead of an array
@@ -139,7 +144,7 @@ func (b *BookImpl) matchOrder(o order.Order) (matchedOrders []order.Order, amoun
 	priceMatchedOrdersNode.Value.(*order.OrderList).List = ordersList
 
 	if len(matchedOrders) > 0 {
-		logger.Info("order matched", map[string]interface{}{
+		logger.Info("order matched", map[string]any{
 			"order_id":      o.ID,
 			"pair_id":       o.PairID,
 			"matched_count": len(matchedOrders),
@@ -151,7 +156,7 @@ func (b *BookImpl) matchOrder(o order.Order) (matchedOrders []order.Order, amoun
 }
 
 func (b *BookImpl) RemoveOrder(id string) error {
-	logger.Info("Searching for order", map[string]interface{}{
+	logger.Info("Searching for order", map[string]any{
 		"order_id": id,
 	})
 	orderMetadata, exists := b.ordersIndex[id]
