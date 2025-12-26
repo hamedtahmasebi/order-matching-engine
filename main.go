@@ -2,6 +2,8 @@ package main
 
 import (
 	"order-book/book"
+	"order-book/db"
+	"order-book/order"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
@@ -9,7 +11,12 @@ import (
 )
 
 func main() {
-	orderBook := book.NewBook()
+	dbpool, err := db.Connect()
+	if err != nil {
+		panic(err)
+	}
+	orderHistoryRepo := order.NewOrderRepository(dbpool)
+	orderBook := book.NewBook(orderHistoryRepo)
 
 	app := fiber.New()
 	app.Use(logger.New())

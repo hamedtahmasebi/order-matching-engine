@@ -10,7 +10,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
-	"github.com/google/uuid"
 )
 
 var (
@@ -34,7 +33,16 @@ func BindOrderBookRouter(r fiber.Router, book Book) {
 				Data:    nil,
 			})
 		}
-		err := book.RemoveOrder(id)
+		orderId, err := strconv.Atoi(id)
+		if err != nil {
+			c.Status(http.StatusBadRequest)
+			return c.JSON(&Response{
+				Message: "Invalid ID",
+				Data:    nil,
+			})
+		}
+
+		err = book.CancellOrder(orderId)
 		if err == ErrOrderNotFound {
 			c.Status(http.StatusNotFound)
 			return c.JSON(&Response{
@@ -45,7 +53,7 @@ func BindOrderBookRouter(r fiber.Router, book Book) {
 
 		c.Status(http.StatusOK)
 		return c.JSON(&Response{
-			Message: "Order removed successfully",
+			Message: "Order cancelled successfully",
 			Data:    nil,
 		})
 	})
@@ -55,7 +63,6 @@ func BindOrderBookRouter(r fiber.Router, book Book) {
 			return err
 		}
 		order.CreatedAt = time.Now()
-		order.ID = uuid.NewString()
 
 		book.AddOrder(order)
 		resp := &Response{

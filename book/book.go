@@ -19,7 +19,7 @@ type Book interface {
 		ask []order.Order,
 		bid []order.Order,
 	)
-	RemoveOrder(id string) error
+	CancellOrder(id int) error
 }
 
 type OrderMetadata struct {
@@ -27,7 +27,7 @@ type OrderMetadata struct {
 	Price  float64
 	Type   order.OrderType
 	Amount float64
-	ID     string
+	ID     int
 }
 
 type BookImpl struct {
@@ -35,20 +35,29 @@ type BookImpl struct {
 	askTreesMap            map[string]*redblacktree.Tree
 	bidTreesMap            map[string]*redblacktree.Tree
 	orderProcessingChannel chan order.Order
-	ordersIndex            map[string]OrderMetadata
+	orderRepo              order.OrderRepo
 }
 
 func (b *BookImpl) insertOrder(o order.Order) {
+	createdOrder, err := b.orderRepo.CreateOrder(o.PairID, o.Price, o.Amount, o.AccountID, o.Type)
+	if err != nil {
+		logger.Error("failed to add order history event", map[string]any{
+			"error": err,
+		})
+	}
+	if err != nil {
+		logger.Error("failed to create order", map[string]any{
+			"order_id": o.ID,
+			"pair_id":  o.PairID,
+			"price":    o.Price,
+			"amount":   o.Amount,
+			"error":    err,
+		})
+		return
+	}
+	o.ID = createdOrder.ID
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	b.ordersIndex[o.ID] = OrderMetadata{
-		Price:  o.Price,
-		Type:   o.Type,
-		Amount: o.Amount,
-		ID:     o.ID,
-		PairId: o.PairID,
-	}
 
 	tree := b.getTreeFor(o.PairID, o.Type)
 	if tree == nil {
@@ -58,7 +67,7 @@ func (b *BookImpl) insertOrder(o order.Order) {
 	node := tree.GetNode(o.Price)
 	if node == nil {
 		tree.Put(o.Price, &order.OrderList{List: []order.Order{o}})
-		logger.Debug("order inserted at new price level", map[string]interface{}{
+		logger.Debug("order inserted at new price level", map[string]any{
 			"order_id": o.ID,
 			"pair_id":  o.PairID,
 			"price":    o.Price,
@@ -88,7 +97,12 @@ func (b *BookImpl) insertOrder(o order.Order) {
 	})
 }
 
-func (b *BookImpl) matchOrder(o order.Order) (matchedOrders []order.Order, amountLeft float64) {
+type MatchResult struct {
+	targetOrder  order.Order
+	match_status string
+}
+
+func (b *BookImpl) matchOrder(o order.Order) (matchResults []MatchResult, amountLeft float64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -105,7 +119,7 @@ func (b *BookImpl) matchOrder(o order.Order) (matchedOrders []order.Order, amoun
 	}
 	priceMatchedOrdersNode := tree.GetNode(o.Price)
 	if priceMatchedOrdersNode == nil {
-		logger.Debug("no matching orders with this price found", map[string]interface{}{
+		logger.Debug("no matching orders with this price found", map[string]any{
 			"order_id": o.ID,
 			"pair_id":  o.PairID,
 			"price":    o.Price,
@@ -114,7 +128,6 @@ func (b *BookImpl) matchOrder(o order.Order) (matchedOrders []order.Order, amoun
 	}
 
 	amountLeft = o.Amount
-	matchedOrders = make([]order.Order, 0)
 	ordersList := priceMatchedOrdersNode.Value.(*order.OrderList).List
 
 	for idx := 0; idx < len(ordersList) && amountLeft > 0; {
@@ -130,24 +143,25 @@ func (b *BookImpl) matchOrder(o order.Order) (matchedOrders []order.Order, amoun
 			matched := ordersList[idx]
 			matched.Amount = amountLeft
 			ordersList[idx].Amount -= amountLeft
-			matchedOrders = append(matchedOrders, matched)
+			matchResults = append(matchResults, MatchResult{targetOrder: matched, match_status: "partial"})
 			amountLeft = 0
 			break
 		}
 		if ordersList[idx].Amount <= amountLeft {
-			matchedOrders = append(matchedOrders, ordersList[idx])
-			amountLeft -= ordersList[idx].Amount
+			matched := ordersList[idx]
+			matchResults = append(matchResults, MatchResult{targetOrder: matched, match_status: "full"})
+			amountLeft -= matched.Amount
 			ordersList = slices.Delete(ordersList, idx, idx+1)
 			continue
 		}
 	}
 	priceMatchedOrdersNode.Value.(*order.OrderList).List = ordersList
 
-	if len(matchedOrders) > 0 {
+	if len(matchResults) > 0 {
 		logger.Info("order matched", map[string]any{
 			"order_id":      o.ID,
 			"pair_id":       o.PairID,
-			"matched_count": len(matchedOrders),
+			"matched_count": len(matchResults),
 			"amount_left":   amountLeft,
 		})
 	}
@@ -155,30 +169,31 @@ func (b *BookImpl) matchOrder(o order.Order) (matchedOrders []order.Order, amoun
 	return
 }
 
-func (b *BookImpl) RemoveOrder(id string) error {
+func (b *BookImpl) CancellOrder(id int) error {
 	logger.Info("Searching for order", map[string]any{
 		"order_id": id,
 	})
-	orderMetadata, exists := b.ordersIndex[id]
-	if !exists {
+
+	foundOrder, err := b.orderRepo.GetOrderByID(id)
+	if err != nil {
 		logger.Error("Order not found in the index")
-		return ErrOrderNotFound
+		return err
 	}
 
-	tree := b.getTreeFor(orderMetadata.PairId, orderMetadata.Type)
+	tree := b.getTreeFor(foundOrder.PairID, foundOrder.Type)
 	if tree == nil {
 		logger.Error("Order tree not found")
 		return ErrOrderNotFound
 	}
-	node := tree.GetNode(orderMetadata.Price)
+	node := tree.GetNode(foundOrder.Price)
 	if node == nil {
 		return ErrOrderNotFound
 	}
 
 	orders := node.Value.(*order.OrderList).List
 	for idx, o := range orders {
-		if o.ID == orderMetadata.ID {
-			logger.Debug("order removed", map[string]interface{}{
+		if o.ID == foundOrder.ID {
+			logger.Debug("order removed", map[string]any{
 				"order_id": o.ID,
 				"pair_id":  o.PairID,
 				"type":     o.Type,
@@ -187,7 +202,10 @@ func (b *BookImpl) RemoveOrder(id string) error {
 			})
 			orders := slices.Delete(orders, idx, idx+1)
 			node.Value.(*order.OrderList).List = orders
-			delete(b.ordersIndex, id)
+			err = b.orderRepo.AddEvent(order.OrderHistoryEvent{
+				Name:    "ORDER_CANCELLED",
+				OrderId: foundOrder.ID,
+			})
 			if len(orders) == 0 {
 				tree.Remove(node.Key)
 			}
@@ -198,7 +216,7 @@ func (b *BookImpl) RemoveOrder(id string) error {
 }
 
 func (b *BookImpl) AddOrder(o order.Order) {
-	logger.Info("order received", map[string]interface{}{
+	logger.Info("order received", map[string]any{
 		"order_id": o.ID,
 		"pair_id":  o.PairID,
 		"type":     o.Type,
@@ -279,26 +297,32 @@ func (b *BookImpl) genTreeFor(pairId string, orderType order.OrderType) *redblac
 	return tree
 }
 
-func NewBook() Book {
+func NewBook(orderRepo order.OrderRepo) Book {
 	logger.Info("order book initialized")
 
 	b := BookImpl{
 		askTreesMap:            make(map[string]*redblacktree.Tree, 0),
 		bidTreesMap:            make(map[string]*redblacktree.Tree, 0),
 		orderProcessingChannel: make(chan order.Order),
-		ordersIndex:            make(map[string]OrderMetadata),
+		orderRepo:              orderRepo,
 	}
 
 	go func() {
 		for o := range b.orderProcessingChannel {
-			matchedOrders, amountLeft := b.matchOrder(o)
-			if len(matchedOrders) == 0 {
-				b.insertOrder(o)
-				continue
+			matchedResults, amountLeft := b.matchOrder(o)
+			b.insertOrder(o)
+
+			for _, matchedResult := range matchedResults {
+				b.orderRepo.AddEvent(order.OrderHistoryEvent{
+					Name:    "TARGET_HIT",
+					OrderId: matchedResult.targetOrder.ID,
+					Metadata: map[string]any{
+						"matching_order_id": o.ID,
+					},
+				})
 			}
+
 			if amountLeft > 0 {
-				o.Amount = amountLeft
-				b.insertOrder(o)
 				logger.Info("order partially matched", map[string]any{
 					"order_id":  o.ID,
 					"pair_id":   o.PairID,

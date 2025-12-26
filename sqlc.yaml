@@ -1,0 +1,16 @@
+version: "2"
+sql:
+    - engine: postgresql
+      queries: "order/repository/queries.sql"
+      schema: "order/repository/schema.sql"
+      gen:
+          go:
+              package: "repository"
+              out: "./order/repository/gen"
+    # - engine: postgresql
+    #   queries: "history/*.sql"
+    #   schema: "./db/migrations"
+    #   gen:
+    #       go:
+    #           package: "history"
+    #           out: "./history/gen"
